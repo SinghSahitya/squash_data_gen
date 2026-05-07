@@ -1,0 +1,96 @@
+name: Sentinel Data Generator
+
+# Runs automatically on schedule + manual trigger
+on:
+  schedule:
+    # ─── Baseline traffic (5x/day, UTC → IST +5:30) ───
+    - cron: '30 3 * * *'   # 09:00 IST — morning burst
+    - cron: '30 5 * * *'   # 11:00 IST — mid-morning
+    - cron: '0 9 * * *'    # 14:30 IST — afternoon
+    - cron: '30 11 * * *'  # 17:00 IST — evening
+    - cron: '0 15 * * *'   # 20:30 IST — night
+
+    # ─── Anomaly injection (2-3x/week, staggered) ───
+    - cron: '30 7 * * 1'   # Monday 13:00 IST
+    - cron: '0 16 * * 3'   # Wednesday 21:30 IST
+    - cron: '30 10 * * 5'  # Friday 16:00 IST
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - traffic
+          - anomaly
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r sentinel_test_data/requirements.txt
+
+      - name: Write BQ credentials file
+        run: |
+          if [ -n "$BQ_CREDS" ]; then
+            echo "$BQ_CREDS" > /tmp/bq-key.json
+          else
+            echo '{}' > /tmp/bq-key.json
+          fi
+        env:
+          BQ_CREDS: ${{ secrets.BIGQUERY_CREDENTIALS_JSON }}
+
+      - name: Determine mode
+        id: mode
+        run: |
+          # Manual trigger uses input; scheduled runs determine from time
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            DOW=$(date -u +%u)
+            # Anomaly on Mon 07:30, Wed 16:00, Fri 10:30 UTC
+            if [[ ("$HOUR" == "07" && "$DOW" == "1") || ("$HOUR" == "16" && "$DOW" == "3") || ("$HOUR" == "10" && "$DOW" == "5") ]]; then
+              echo "mode=anomaly" >> $GITHUB_OUTPUT
+            else
+              echo "mode=traffic" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Run data generator
+        working-directory: sentinel_test_data
+        run: python cron_runner.py --mode=${{ steps.mode.outputs.mode }} --no-jitter
+        env:
+          # BigQuery
+          BIGQUERY_PROJECT: ${{ secrets.BIGQUERY_PROJECT }}
+          BIGQUERY_KEY_FILE: /tmp/bq-key.json
+          BIGQUERY_DATASET: ${{ secrets.BIGQUERY_DATASET }}
+
+          # Zendesk
+          ZENDESK_SUBDOMAIN: ${{ secrets.ZENDESK_SUBDOMAIN }}
+          ZENDESK_EMAIL: ${{ secrets.ZENDESK_EMAIL }}
+          ZENDESK_API_TOKEN: ${{ secrets.ZENDESK_API_TOKEN }}
+
+          # PostHog
+          POSTHOG_HOST: https://us.posthog.com
+          POSTHOG_PROJECT_API_KEY: ${{ secrets.POSTHOG_PROJECT_API_KEY }}
+
+          # NVIDIA LLM
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_MODEL: meta/llama-3.3-70b-instruct
+          NVIDIA_BASE_URL: https://integrate.api.nvidia.com/v1

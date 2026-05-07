@@ -43,7 +43,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r sentinel_test_data/requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Write BQ credentials file
         run: |
@@ -73,7 +73,6 @@ jobs:
           fi
 
       - name: Run data generator
-        working-directory: sentinel_test_data
         run: python cron_runner.py --mode=${{ steps.mode.outputs.mode }} --no-jitter
         env:
           # BigQuery
